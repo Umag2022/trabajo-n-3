@@ -1,0 +1,138 @@
+import time
+import pymysql
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
+from webdriver_manager.firefox import GeckoDriverManager
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# Configuración de Selenium para Firefox
+options = Options()
+driver = webdriver.Firefox(service=Service(GeckoDriverManager().install()), options=options)
+
+# URL específica para viviendas en Punta Arenas
+url = "https://www.yapo.cl/bienes-raices-venta-de-propiedades/magallanes-antartica-punta-arenas?q=withcat.bienes-raices-venta-de-propiedades-casas"
+
+# Abrir la página
+driver.get(url)
+time.sleep(10)  # Esperar para que cargue completamente
+
+# Intentar cerrar el anuncio emergente usando JavaScript si aparece
+try:
+    driver.execute_script("Cerrar_Ad_Itt_Img_1234567890();")  # Intentar cerrar el anuncio con JS
+    print("Anuncio cerrado exitosamente usando JavaScript.")
+    time.sleep(3)
+except Exception as e:
+    print(f"No se pudo cerrar el anuncio con JavaScript: {e}")
+
+# Esperar hasta que los elementos de las casas estén disponibles
+WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.CSS_SELECTOR, ".d3-ads-grid.d3-ads-grid--category-list"))
+)
+
+# Encontrar el listado de casas 
+casas = driver.find_elements(By.CSS_SELECTOR, ".d3-ads-grid.d3-ads-grid--category-list .d3-ad-tile.d3-ads-grid__item.d3-ad-tile--fullwidth.d3-ad-tile--bordered.d3-ad-tile--feat.d3-ad-tile--feat-silver")
+
+# Lista para almacenar los datos
+datos_viviendas = []
+
+# Extraer datos de cada casa
+for casa in casas[:10]:  # Limitar a los primeros 10 anuncios
+    try:
+        # Volver a encontrar el enlace en caso de que el elemento se haya vuelto stale
+        enlace = casa.find_element(By.TAG_NAME, "a").get_attribute("href")
+        
+        # Hacer clic en el enlace de la casa para abrir la página de detalles
+        driver.get(enlace)
+        time.sleep(5)  # Esperar para que la página cargue completamente
+
+        # Esperar hasta que los elementos del detalle de la casa estén disponibles
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".d3-container.d3-property__insight"))
+        )
+        
+        # Extraer detalles de la casa (precio, dormitorios, baños, estacionamientos y metros construidos)
+        detalle_casa = driver.find_element(By.CSS_SELECTOR, ".d3-container.d3-property__insight")
+        
+        precio = detalle_casa.find_element(By.CSS_SELECTOR, ".d3-property-insight > div:nth-child(1)").text
+        dormitorios = detalle_casa.find_element(By.CSS_SELECTOR, ".d3-property-insight > div:nth-child(2)").text
+        banos = detalle_casa.find_element(By.CSS_SELECTOR, ".d3-property-insight > div:nth-child(3)").text
+        estacionamiento = detalle_casa.find_element(By.CSS_SELECTOR, ".d3-property-insight > div:nth-child(4)").text
+        metros_construidos = detalle_casa.find_element(By.CSS_SELECTOR, ".d3-property-insight > div:nth-child(5)").text
+        
+        # Agregar datos a la lista sin limpiar
+        datos_viviendas.append({
+            "Precio": precio,
+            "Dormitorios": dormitorios,
+            "Baños": banos,
+            "Estacionamientos": estacionamiento,
+            "Metros Construidos": metros_construidos,
+            "Enlace": enlace
+        })
+
+        # Volver atrás
+        driver.back()
+        time.sleep(5)
+    except Exception as e:
+        print(f"Error al procesar el anuncio: {e}")
+        continue
+
+# Cerrar el navegador
+driver.quit()
+
+# Crear DataFrame sin limpiar los valores
+df_viviendas = pd.DataFrame(datos_viviendas)
+
+# Mostrar el DataFrame para verificar
+print(df_viviendas)
+
+# Guardar en CSV
+df_viviendas.to_csv("viviendas_punta_arenas.csv", index=False)
+
+# Conectar a la base de datos de Azure
+conexion = pymysql.connect(
+    host='prueba12.mysql.database.azure.com',
+    user='SNEER',
+    password='Nono_*01',
+    database='compra_casas_yapo',
+    port=3306
+)
+
+try:
+    # Crear cursor
+    cursor = conexion.cursor()
+
+    # Crear la tabla si no existe
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS viviendas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        precio VARCHAR(255),
+        dormitorios VARCHAR(255),
+        banos VARCHAR(255),
+        estacionamientos VARCHAR(255),
+        metros_construidos VARCHAR(255),
+        enlace TEXT
+    )
+    """)
+
+    # Insertar los datos del DataFrame en la base de datos
+    for _, row in df_viviendas.iterrows():
+        cursor.execute("""
+        INSERT INTO viviendas (precio, dormitorios, banos, estacionamientos, metros_construidos, enlace)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """, (row['Precio'], row['Dormitorios'], row['Baños'], row['Estacionamientos'], row['Metros Construidos'], row['Enlace']))
+
+    # Confirmar los cambios
+    conexion.commit()
+
+    print("Datos insertados correctamente en la base de datos.")
+
+except Exception as e:
+    print(f"Error al insertar los datos: {e}")
+
+finally:
+    # Cerrar la conexión a la base de datos
+    conexion.close()
